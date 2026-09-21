@@ -1,113 +1,180 @@
+"""
+explainability/shap_explainer.py
+Generates SHAP explanations for the XGBoost component.
+Provides both global feature importance and per-transaction explanations
+in plain words (used by the API for "top 5 reasons").
+
+Run from repo root:
+    python explainability/shap_explainer.py
+    SMOKE=1 python explainability/shap_explainer.py
+"""
 
 import pandas as pd
 import numpy as np
 import pickle
-import shap
-import matplotlib.pyplot as plt
 import os
+import sys
+import json
 import warnings
+
 warnings.filterwarnings("ignore")
 
-print("FinShield SHAP Explainability Starting...")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from utils.config import cfg, is_smoke, get_processed_dir, get_reports_dir
+
+import shap
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+# ---------------------------------------------------------------------------
+# Feature name → plain-English mapping for API responses
+# ---------------------------------------------------------------------------
+FEATURE_DESCRIPTIONS = {
+    "TransactionAmt": "Transaction amount",
+    "TransactionAmt_Log": "Log of transaction amount",
+    "Transaction_Hour": "Hour of the day",
+    "Transaction_Day": "Day of the week",
+    "Is_High_Value": "High-value transaction flag",
+    "card1": "Card identifier",
+    "card2": "Card attribute 2",
+    "card3": "Card attribute 3",
+    "card5": "Card attribute 5",
+    "addr1": "Billing address",
+    "addr2": "Billing country",
+    "P_emaildomain": "Purchaser email domain",
+    "R_emaildomain": "Recipient email domain",
+    "DeviceType": "Device type",
+    "DeviceInfo": "Device info",
+    "ProductCD": "Product code",
+    "card_time_since_last": "Time since last transaction",
+}
+
+# Add rolling window features
+for w in [3600, 86400]:
+    label = "1 hour" if w == 3600 else "24 hours"
+    FEATURE_DESCRIPTIONS[f"card_txn_count_{w}s"] = f"Transaction count in last {label}"
+    FEATURE_DESCRIPTIONS[f"card_amt_sum_{w}s"] = f"Total amount in last {label}"
 
 
-with open("models/saved/xgboost_model.pkl", "rb") as f:
-    model = pickle.load(f)
+def get_feature_description(feat_name: str) -> str:
+    """Convert a feature name to a plain-English description.
 
-with open("models/saved/feature_cols.pkl", "rb") as f:
-    feature_cols = pickle.load(f)
-
-df = pd.read_csv("data/processed/finshield_sample.csv")
-X  = df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
-y  = df["isFraud"]
-
-# Use small sample for SHAP (it's slow on large data)
-X_sample = X.sample(n=500, random_state=42)
-
-
-print("\nComputing SHAP values (takes 1-2 mins)...")
-explainer   = shap.TreeExplainer(model)
-shap_values = explainer.shap_values(X_sample)
-
-print("Generating global importance plot...")
-os.makedirs("docs", exist_ok=True)
-
-plt.figure(figsize=(10, 8))
-shap.summary_plot(shap_values, X_sample,
-                  plot_type="bar",
-                  max_display=15,
-                  show=False)
-plt.title("FinShield — Top 15 Fraud Indicators (SHAP)", fontsize=13)
-plt.tight_layout()
-plt.savefig("docs/shap_global.png", dpi=150, bbox_inches="tight")
-plt.close()
-print("   Saved: docs/shap_global.png")
+    Falls back to the raw feature name with underscores replaced by spaces.
+    """
+    if feat_name in FEATURE_DESCRIPTIONS:
+        return FEATURE_DESCRIPTIONS[feat_name]
+    # Auto-generate: "C1" → "Feature C1", "V12" → "Feature V12"
+    if feat_name[0] in ("C", "D", "V") and feat_name[1:].isdigit():
+        return f"Vesta feature {feat_name}"
+    if feat_name.startswith("id_"):
+        return f"Identity feature {feat_name}"
+    return feat_name.replace("_", " ").title()
 
 
-print("\nExplaining individual transactions...")
+def explain_single(xgb_model, explainer, features_row: pd.DataFrame,
+                    feature_cols: list, top_k: int = 5) -> list:
+    """Generate top-K SHAP reasons for a single transaction in plain words.
 
-def explain_transaction(idx, X_data, shap_vals, threshold=0.5):
-    """Generate human-readable explanation for one transaction."""
-    pred_prob = model.predict_proba(X_data.iloc[[idx]])[:, 1][0]
-    is_fraud  = pred_prob > threshold
+    Args:
+        xgb_model: Trained XGBoost model.
+        explainer: SHAP TreeExplainer.
+        features_row: Single-row DataFrame of features.
+        feature_cols: List of feature column names.
+        top_k: Number of top reasons to return.
 
-    # Get top contributing features
-    feature_shap = list(zip(feature_cols, shap_vals[idx]))
-    feature_shap.sort(key=lambda x: abs(x[1]), reverse=True)
-    top_features = feature_shap[:5]
+    Returns:
+        List of dicts with 'feature', 'description', 'impact', 'direction'.
+    """
+    shap_values = explainer.shap_values(features_row)
+    # For binary classification, shap_values may be a list [class0, class1]
+    if isinstance(shap_values, list):
+        sv = shap_values[1]  # class 1 (fraud) SHAP values
+    else:
+        sv = shap_values
 
-    # Calculate contribution percentages
-    total = sum(abs(s) for _, s in top_features) + 1e-10
-    contributions = [(f, s, abs(s)/total*100) for f, s in top_features]
+    # Get the first (and only) row
+    sv_row = sv[0] if sv.ndim > 1 else sv
 
-    print(f"\n{'='*55}")
-    print(f"  Transaction #{idx}")
-    print(f"  Fraud Probability : {pred_prob:.2%}")
-    print(f"  Decision          : {'🚨 FRAUD' if is_fraud else '✅ LEGIT'}")
-    print(f"  {'─'*45}")
-    print(f"  Top Reasons:")
-    for feat, shap_val, pct in contributions:
-        direction = "↑ increases" if shap_val > 0 else "↓ decreases"
-        print(f"    {feat[:30]:<30} {direction} risk ({pct:.1f}%)")
-    print(f"{'='*55}")
+    # Pair feature names with SHAP values
+    pairs = list(zip(feature_cols, sv_row))
+    # Sort by absolute SHAP value (most impactful first)
+    pairs.sort(key=lambda x: abs(x[1]), reverse=True)
 
-    return {
-        "transaction_idx" : idx,
-        "fraud_probability": round(pred_prob, 4),
-        "is_fraud"        : bool(is_fraud),
-        "risk_level"      : "HIGH" if pred_prob > 0.8 else
-                            "MEDIUM" if pred_prob > 0.5 else "LOW",
-        "top_reasons"     : [
-            {"feature": f, "contribution_pct": round(p, 1),
-             "direction": "risk_increase" if s > 0 else "risk_decrease"}
-            for f, s, p in contributions
-        ]
-    }
-
-# Explain 3 transactions — 2 fraud, 1 legit
-fraud_idx = df[df["isFraud"] == 1].index[:2].tolist()
-legit_idx = df[df["isFraud"] == 0].index[:1].tolist()
-
-results = []
-for idx in fraud_idx + legit_idx:
-    sample_pos = X_sample.index.get_loc(idx) if idx in X_sample.index else 0
-    result = explain_transaction(sample_pos, X_sample,
-                                 shap_values)
-    results.append(result)
+    reasons = []
+    for feat, shap_val in pairs[:top_k]:
+        direction = "increases" if shap_val > 0 else "decreases"
+        reasons.append({
+            "feature": feat,
+            "description": get_feature_description(feat),
+            "impact": round(float(abs(shap_val)), 4),
+            "direction": f"{direction} fraud risk",
+        })
+    return reasons
 
 
-with open("models/saved/shap_explainer.pkl", "wb") as f:
-    pickle.dump(explainer, f)
+def main():
+    """Generate global SHAP importance plot and save explainer."""
+    PROCESSED = get_processed_dir()
+    REPORTS = get_reports_dir()
+    FIGURES = os.path.join(REPORTS, "figures")
+    os.makedirs(FIGURES, exist_ok=True)
 
-print(f"\nSHAP explainer saved to models/saved/shap_explainer.pkl")
-print(f"Global importance chart saved to docs/shap_global.png")
-print(f"\nExample API response with explanation:")
+    print("=" * 60)
+    print("FinShield SHAP Explainability")
+    if is_smoke:
+        print("  MODE: SMOKE")
+    print("=" * 60)
 
-import json
-class NumpyEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, (np.float32, np.float64, np.integer)):
-            return float(obj)
-        return super().default(obj)
+    # Load model and data
+    print("\n[1/3] Loading model and data...")
+    with open("models/saved/xgboost_model.pkl", "rb") as f:
+        model = pickle.load(f)
+    with open("models/saved/feature_cols.pkl", "rb") as f:
+        feature_cols = pickle.load(f)
 
-print(json.dumps(results[0], indent=2, cls=NumpyEncoder))
+    test_df = pd.read_parquet(os.path.join(PROCESSED, "test.parquet"))
+    X_test = test_df[feature_cols].astype(np.float32)
+
+    # Use a sample for SHAP (it's slow on large data)
+    sample_size = min(500, len(X_test))
+    X_sample = X_test.sample(n=sample_size, random_state=42)
+
+    # Build explainer
+    print("\n[2/3] Computing SHAP values...")
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_sample)
+
+    # Global importance plot
+    print("\n[3/3] Generating plots...")
+    plt.figure(figsize=(10, 8))
+    shap.summary_plot(shap_values, X_sample,
+                      plot_type="bar", max_display=15, show=False)
+    plt.title("FinShield — Top 15 Fraud Indicators (SHAP)"
+              + (" [SMOKE]" if is_smoke else ""))
+    plt.tight_layout()
+    plt.savefig(os.path.join(FIGURES, "shap_global.png"), dpi=150,
+                bbox_inches="tight")
+    plt.close()
+    print(f"   Saved: {FIGURES}/shap_global.png")
+
+    # Save explainer for API use
+    with open("models/saved/shap_explainer.pkl", "wb") as f:
+        pickle.dump(explainer, f)
+    print("   Saved: models/saved/shap_explainer.pkl")
+
+    # Example explanations
+    print("\nExample explanation:")
+    sample_row = X_sample.iloc[[0]]
+    reasons = explain_single(model, explainer, sample_row, feature_cols)
+    for r in reasons:
+        print(f"   {r['description']}: {r['direction']} (impact: {r['impact']})")
+
+    print(f"\n{'=' * 60}")
+    print("SHAP explainability complete!")
+    print(f"{'=' * 60}")
+
+
+if __name__ == "__main__":
+    main()

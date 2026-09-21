@@ -1,5 +1,5 @@
-
 services:
+  # ── Infrastructure ──────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     container_name: finshield-zookeeper
@@ -31,28 +31,80 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: finshield
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: finshield123
+      POSTGRES_DB: ${POSTGRES_DB:-finshield}
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_postgres_password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
 
   redis:
-    image: redis:alpine
+    image: redis:7-alpine
     container_name: finshield-redis
     ports:
       - "6379:6379"
 
+  # ── MLflow (Phase 1) ─────────────────────────────────────────
+  # CORRECTION 10: Named Docker volume so runs survive restarts
   mlflow:
     image: python:3.11-slim
     container_name: finshield-mlflow
     ports:
       - "5000:5000"
     command: >
-      bash -c "pip install mlflow && mlflow server --host 0.0.0.0 --port 5000"
+      bash -c "pip install mlflow==2.9.2 &&
+               mlflow server --host 0.0.0.0 --port 5000
+               --backend-store-uri sqlite:///mlflow/mlflow.db
+               --default-artifact-root /mlflow/artifacts"
+    volumes:
+      - mlflow_data:/mlflow
+
+  # ── Monitoring (Phase 4) ─────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.48.1
+    container_name: finshield-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: on-failure
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.2.3
     container_name: finshield-grafana
     ports:
       - "3000:3000"
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: finshield123
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: on-failure
+
+  # ── Airflow (Phase 5) ─────────────────────────────────────────
+  airflow:
+    image: apache/airflow:2.7.3-python3.11
+    container_name: finshield-airflow
+    ports:
+      - "8080:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+    command: airflow standalone
+    restart: on-failure
+
+# ── Named volumes ─────────────────────────────────────────────
+volumes:
+  pgdata:
+    driver: local
+  mlflow_data:
+    driver: local

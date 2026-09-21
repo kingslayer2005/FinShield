@@ -1,12 +1,47 @@
-# Data files - too large for GitHub
+# Data files — too large for GitHub
 data/raw/
 data/processed/
+data/synthetic/
 *.csv
+
+# Model artifacts — retrained locally
+models/saved/
 *.pkl
 *.h5
+*.keras
+
+# MLflow local runs
+mlruns/
 
 # Python
 __pycache__/
 *.pyc
 venv/
+.venv/
+
+# Secrets
 .env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Smoke outputs — never tracked
+reports_smoke/
+
+# Reports — ignore everything EXCEPT tracked files
+reports/*
+!reports/metrics.json
+!reports/model_selection.json
+!reports/figures/
+reports/figures/*
+!reports/figures/.gitkeep
+!reports/drift/
+
+# Airflow metadata
+airflow/airflow.db
+airflow/logs/
+airflow/airflow-webserver.pid
+
+# Evidently HTML reports (large)
+reports/drift/*.html

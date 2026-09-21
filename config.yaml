@@ -1,0 +1,121 @@
+# =============================================================================
+# FinShield Configuration
+# All tuneable settings live here. No magic numbers in code.
+# =============================================================================
+
+# --- Smoke mode ---
+# Override with environment variable SMOKE=1 to use synthetic data + tiny models
+smoke: false
+
+# --- Data paths ---
+data:
+  raw_dir: "data/raw"                         # where Kaggle CSVs live
+  processed_dir: "data/processed"             # where split parquets go
+  synthetic_dir: "data/synthetic"             # where synthetic smoke data lives
+
+# --- Chronological train / val / test split ---
+split:
+  train_frac: 0.70                            # first 70% by TransactionDT
+  val_frac: 0.15                              # next 15%
+  test_frac: 0.15                             # last 15%
+  inner_val_frac: 0.10                        # last 10% of TRAIN for early stopping
+
+# --- Preprocessing ---
+preprocessing:
+  missing_threshold: 0.50                     # drop columns missing > 50% in train
+
+# --- Behavioural features ---
+features:
+  card_key: ["card1", "addr1"]                # columns that identify a card
+  rolling_windows_sec: [3600, 86400]          # 1 hour and 24 hours in seconds
+  lstm_seq_len: 10                            # max past transactions for LSTM sequences
+
+# --- XGBoost ---
+xgboost:
+  n_estimators: 500
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  eval_metric: "aucpr"                        # PR-AUC for early stopping (imbalanced)
+  early_stopping_rounds: 50
+  random_state: 42
+  n_jobs: -1                                  # use all CPU cores
+
+# --- Smoke-mode XGBoost overrides ---
+xgboost_smoke:
+  n_estimators: 20
+  max_depth: 3
+  early_stopping_rounds: 5
+
+# --- SMOTE experiment ---
+smote:
+  sampling_strategy: 0.1                      # minority / majority ratio after SMOTE
+
+# --- Autoencoder ---
+autoencoder:
+  layer_sizes: [256, 128, 64, 32]             # encoder layers (decoder mirrors)
+  dropout: 0.2
+  epochs: 30
+  batch_size: 512
+  patience: 5                                 # early-stopping patience
+
+# --- Smoke-mode Autoencoder overrides ---
+autoencoder_smoke:
+  layer_sizes: [32, 16]
+  epochs: 2
+  batch_size: 256
+  patience: 1
+
+# --- LSTM ---
+lstm:
+  hidden_units: [64, 32]                      # LSTM layer sizes
+  dense_units: 16
+  dropout: 0.3
+  epochs: 15
+  batch_size: 256
+  patience: 3
+  class_weight_fraud: 10                      # weight for fraud class
+  top_features: 30                            # use top N XGBoost features to limit RAM
+
+# --- Smoke-mode LSTM overrides ---
+lstm_smoke:
+  hidden_units: [16]
+  dense_units: 8
+  epochs: 2
+  batch_size: 128
+  patience: 1
+
+# --- Ensemble ---
+ensemble:
+  stacking_cv_folds: 5                        # folds for cross_val_predict on validation
+
+# --- Decision thresholds ---
+thresholds:
+  review: 0.3                                 # score >= review → "review"
+  block: 0.7                                  # score >= block  → "block"
+
+# --- MLflow ---
+mlflow:
+  experiment_name: "FinShield-Fraud-Detection"
+  tracking_uri: "http://localhost:5000"        # MLflow server (Docker)
+  fallback_uri: "mlruns"                       # local file store if server unreachable
+
+# --- Streaming (Phase 3) ---
+streaming:
+  kafka_bootstrap: "localhost:9092"
+  topic_transactions: "transactions"
+  topic_alerts: "alerts"
+  replay_rate: 100                             # transactions per second
+  redis_url: "redis://localhost:6379/0"
+  postgres_dsn: "postgresql://admin:CHANGE_ME_postgres_password@localhost:5432/finshield"
+
+# --- Monitoring (Phase 4) ---
+monitoring:
+  drift_reference_sample: 5000                # rows from train for drift reference
+  prometheus_port: 8001                        # separate port for metrics
+
+# --- API (Phase 2) ---
+api:
+  host: "0.0.0.0"
+  port: 8000

@@ -1,0 +1,49 @@
+# =============================================================================
+# FinShield Requirements — pinned for Python 3.11
+# =============================================================================
+
+# --- Core ML ---
+pandas>=2.0,<3.0
+numpy>=1.24,<2.0
+scikit-learn>=1.3,<2.0
+xgboost>=2.0,<3.0
+imbalanced-learn>=0.11,<1.0
+shap>=0.43,<1.0
+
+# --- Deep Learning (CPU only for portability) ---
+tensorflow-cpu>=2.15,<2.16
+
+# --- Experiment Tracking ---
+mlflow>=2.9,<3.0
+
+# --- Config & Serialization ---
+pyyaml>=6.0
+pyarrow>=14.0               # parquet support for pandas
+
+# --- API (Phase 2) ---
+fastapi>=0.104,<1.0
+uvicorn[standard]>=0.24,<1.0
+httpx>=0.25                 # for TestClient
+
+# --- Streaming (Phase 3) ---
+confluent-kafka>=2.3,<3.0
+redis>=5.0,<6.0
+psycopg2-binary>=2.9,<3.0
+sqlalchemy>=2.0,<3.0
+
+# --- Monitoring (Phase 4) ---
+prometheus-client>=0.19,<1.0
+evidently>=0.4,<1.0
+
+# --- Demo (Phase 6) ---
+streamlit>=1.28,<2.0
+plotly>=5.18,<6.0
+matplotlib>=3.8,<4.0
+
+# --- Testing & Linting ---
+pytest>=7.4,<9.0
+pytest-asyncio>=0.21,<1.0
+ruff>=0.1
+
+# --- Utilities ---
+joblib>=1.3

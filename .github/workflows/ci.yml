@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv pip install --system -r requirements.txt
+
+      - name: Lint with ruff
+        run: ruff check .
+
+      - name: Generate synthetic data
+        run: SMOKE=1 python tests/fixtures/make_synthetic_data.py
+
+      - name: Run preprocessing
+        run: SMOKE=1 python data/scripts/preprocess.py
+
+      - name: Train XGBoost (smoke)
+        run: SMOKE=1 python models/train_xgboost.py
+
+      - name: Train Autoencoder (smoke)
+        run: SMOKE=1 python models/train_autoencoder.py
+
+      - name: Build ensemble (smoke)
+        run: SMOKE=1 python models/ensemble.py
+
+      - name: Run tests
+        run: SMOKE=1 python -m pytest tests/ -v --tb=short
